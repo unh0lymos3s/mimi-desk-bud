@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Desk Bot Message</title>
+<style>
+body{font-family:sans-serif;max-width:420px;margin:40px auto;padding:0 16px}
+input,select,button{font-size:16px;padding:8px;margin:6px 0;width:100%;box-sizing:border-box}
+button{background:#1db954;color:white;border:none;border-radius:4px;cursor:pointer}
+.status{color:#555;margin-bottom:16px;min-height:1.4em}
+.error{color:#c0392b;min-height:1.4em}
+hr{margin:28px 0;border:none;border-top:1px solid #ddd}
+#canvasWrap{display:flex;justify-content:center;margin:12px 0}
+canvas{image-rendering:pixelated;image-rendering:crisp-edges;border:1px solid #333;touch-action:none;background:#000}
+.rowbtns{display:flex;gap:8px}
+.rowbtns button{width:auto;flex:1}
+#giphyResults{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:10px 0}
+#giphyResults img{width:100%;border-radius:4px;cursor:pointer;border:2px solid transparent}
+#giphyResults img:hover{border-color:#1db954}
+</style>
+</head>
+<body>
+
+<div id="loginView">
+  <h2>Desk Bot Login</h2>
+  <div class="error" id="loginError"></div>
+  <form id="loginForm">
+    <input name="pin" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit PIN" required>
+    <button type="submit">Log in</button>
+  </form>
+</div>
+
+<div id="appView" style="display:none">
+  <h2>Desk Bot Message</h2>
+  <div class="status" id="status">Loading...</div>
+  <form id="setForm">
+  <input name="msg" id="msg" maxlength="60" placeholder="e.g. Away from desk until 3pm" required>
+  <select name="duration" id="duration">
+  <option value="10">10 minutes</option>
+  <option value="30">30 minutes</option>
+  <option value="60">1 hour</option>
+  <option value="240">4 hours</option>
+  </select>
+  <button type="submit">Set message</button>
+  </form>
+  <form id="clearForm"><button type="submit" style="background:#888">Clear now</button></form>
+
+  <hr>
+
+  <h2>Draw / Set Image or GIF on Desk Bot</h2>
+  <input type="file" id="imageUpload" accept="image/*">
+  <div class="status" id="drawStatus">Loading...</div>
+  <div id="canvasWrap">
+    <canvas id="board" width="128" height="64" style="width:384px;height:192px"></canvas>
+  </div>
+  <div class="status" id="animInfo"></div>
+  <div class="rowbtns">
+    <button id="clearCanvasBtn" type="button" style="background:#888">Clear canvas</button>
+    <button id="eraseToggleBtn" type="button" style="background:#555">Eraser: off</button>
+  </div>
+  <div class="rowbtns" id="previewControls" style="display:none">
+    <button id="playPauseBtn" type="button" style="background:#555">Pause preview</button>
+  </div>
+  <select id="drawDuration">
+  <option value="10">10 minutes</option>
+  <option value="30">30 minutes</option>
+  <option value="60">1 hour</option>
+  <option value="240">4 hours</option>
+  </select>
+  <button id="sendDrawingBtn" type="button">Send drawing to Desk Bot</button>
+  <button id="sendAnimationBtn" type="button" style="display:none">Send animation to Desk Bot</button>
+  <form id="clearDrawingForm"><button type="submit" style="background:#888">Clear drawing on device</button></form>
+
+  <input type="text" id="saveSlideName" placeholder="Slide name" maxlength="60">
+  <button id="saveToLibraryBtn" type="button" style="background:#3a7bd5">Save to Library</button>
+
+  <hr>
+
+  <h2>Search Giphy</h2>
+  <input type="text" id="giphyQuery" placeholder="e.g. thumbs up">
+  <button id="giphySearchBtn" type="button">Search</button>
+  <div class="error" id="giphyError"></div>
+  <div id="giphyResults"></div>
+
+  <hr>
+
+  <h2>Slide Library</h2>
+  <div class="error" id="libraryError"></div>
+  <div id="libraryGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0"></div>
+
+  <h2>Rotation Picker</h2>
+  <div class="status" id="storageStats"></div>
+  <div style="background:#eee;border-radius:4px;height:10px;overflow:hidden;margin-bottom:16px">
+    <div id="storageBar" style="height:100%;width:0%;background:#1db954"></div>
+  </div>
+  <div class="status" id="pickerStatus"></div>
+  <div id="pickerList"></div>
+  <select id="addSlideSelect"></select>
+  <button id="addSlideBtn" type="button" style="background:#3a7bd5">Add to rotation</button>
+  <button id="saveRotationBtn" type="button">Save rotation</button>
+</div>
+
+<script type="module">
+import { parseGIF, decompressFrames } from "https://cdn.jsdelivr.net/npm/gifuct-js@2.1.2/+esm";
+
+const loginView = document.getElementById('loginView');
+const appView = document.getElementById('appView');
+
+async function checkAuth() {
+  const res = await fetch('/api/message');
+  if (res.status === 401) {
+    loginView.style.display = '';
+    appView.style.display = 'none';
+    return false;
+  }
+  loginView.style.display = 'none';
+  appView.style.display = '';
+  return true;
+}
+
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const pin = document.getElementById('pin').value;
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+  const res = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin }),
+  });
+  if (res.ok) {
+    await init();
+  } else {
+    errEl.textContent = 'Wrong PIN, try again.';
+  }
+});
+
+async function refreshStatus() {
+  const statusEl = document.getElementById('status');
+  try {
+    const res = await fetch('/api/message');
+    const data = await res.json();
+    if (data.active) {
+      const mins = Math.ceil(data.remainingMs / 60000);
+      statusEl.textContent = `Active: "${data.text}" (${mins} min left)`;
+    } else {
+      statusEl.textContent = 'No message set.';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Could not reach server.';
+  }
+}
+
+document.getElementById('setForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = document.getElementById('msg').value;
+  const durationMinutes = document.getElementById('duration').value;
+  await fetch('/api/message', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, durationMinutes }),
+  });
+  document.getElementById('msg').value = '';
+  refreshStatus();
+});
+
+document.getElementById('clearForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await fetch('/api/message?action=clear', { method: 'POST' });
+  refreshStatus();
+});
+
+// ---------- Drawing board ----------
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+ctx.imageSmoothingEnabled = false;
+ctx.fillStyle = '#000';
+ctx.fillRect(0, 0, 128, 64);
+
+let erasing = false;
+let drawing = false;
+
+// Animation preview state (set when a GIF is loaded; empty otherwise)
+let animFrames = []; // array of ImageData (128x64, dithered)
+let animDelayMs = 200;
+let animPlaying = true;
+let animTimer = null;
+let animIndex = 0;
+
+function stopAnimationPreview() {
+  if (animTimer) { clearInterval(animTimer); animTimer = null; }
+  animFrames = [];
+  document.getElementById('previewControls').style.display = 'none';
+  document.getElementById('sendAnimationBtn').style.display = 'none';
+  document.getElementById('animInfo').textContent = '';
+}
+
+function startAnimationPreview() {
+  document.getElementById('previewControls').style.display = '';
+  document.getElementById('sendAnimationBtn').style.display = '';
+  document.getElementById('animInfo').textContent =
+    `${animFrames.length} frame${animFrames.length > 1 ? 's' : ''}, ${animDelayMs}ms/frame`;
+  animIndex = 0;
+  animPlaying = true;
+  document.getElementById('playPauseBtn').textContent = 'Pause preview';
+  if (animTimer) clearInterval(animTimer);
+  animTimer = setInterval(() => {
+    if (!animPlaying || animFrames.length === 0) return;
+    ctx.putImageData(animFrames[animIndex], 0, 0);
+    animIndex = (animIndex + 1) % animFrames.length;
+  }, animDelayMs);
+}
+
+document.getElementById('playPauseBtn').addEventListener('click', (e) => {
+  animPlaying = !animPlaying;
+  e.target.textContent = animPlaying ? 'Pause preview' : 'Resume preview';
+});
+
+function paintAt(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.floor((clientX - rect.left) / rect.width * 128);
+  const y = Math.floor((clientY - rect.top) / rect.height * 64);
+  if (x < 0 || x >= 128 || y < 0 || y >= 64) return;
+  ctx.fillStyle = erasing ? '#000' : '#fff';
+  ctx.fillRect(x, y, 1, 1);
+}
+
+canvas.addEventListener('pointerdown', (e) => { stopAnimationPreview(); drawing = true; paintAt(e.clientX, e.clientY); });
+canvas.addEventListener('pointermove', (e) => { if (drawing) paintAt(e.clientX, e.clientY); });
+window.addEventListener('pointerup', () => { drawing = false; });
+
+document.getElementById('eraseToggleBtn').addEventListener('click', (e) => {
+  erasing = !erasing;
+  e.target.textContent = `Eraser: ${erasing ? 'on' : 'off'}`;
+});
+
+document.getElementById('clearCanvasBtn').addEventListener('click', () => {
+  stopAnimationPreview();
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 128, 64);
+});
+
+// ---------- Shared dithering core ----------
+// Draws `source` (an Image, or a canvas) onto a 128x64 offscreen canvas with
+// "contain" fit (aspect-preserving, centered, black letterboxed), then
+// applies Floyd-Steinberg dithering. Returns a 128x64 ImageData of 0/255 px.
+function ditherSourceTo128x64(source, srcW, srcH) {
+  const scale = Math.min(128 / srcW, 64 / srcH);
+  const w = Math.max(1, Math.round(srcW * scale));
+  const h = Math.max(1, Math.round(srcH * scale));
+  const ox = Math.floor((128 - w) / 2);
+  const oy = Math.floor((64 - h) / 2);
+
+  const off = document.createElement('canvas');
+  off.width = 128;
+  off.height = 64;
+  const octx = off.getContext('2d');
+  octx.fillStyle = '#000';
+  octx.fillRect(0, 0, 128, 64);
+
+  let drawable = source;
+  if (source instanceof ImageData) {
+    // drawImage() can't take raw ImageData -- wrap it in a canvas first.
+    const tmp = document.createElement('canvas');
+    tmp.width = srcW;
+    tmp.height = srcH;
+    tmp.getContext('2d').putImageData(source, 0, 0);
+    drawable = tmp;
+  }
+  octx.drawImage(drawable, ox, oy, w, h);
+
+  const src = octx.getImageData(0, 0, 128, 64).data;
+  const gray = new Float32Array(128 * 64);
+  for (let i = 0; i < 128 * 64; i++) {
+    gray[i] = 0.299 * src[i * 4] + 0.587 * src[i * 4 + 1] + 0.114 * src[i * 4 + 2];
+  }
+
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 128; x++) {
+      const idx = y * 128 + x;
+      const oldVal = gray[idx];
+      const newVal = oldVal < 128 ? 0 : 255;
+      const err = oldVal - newVal;
+      gray[idx] = newVal;
+      if (x + 1 < 128) gray[idx + 1] += err * 7 / 16;
+      if (x - 1 >= 0 && y + 1 < 64) gray[idx + 128 - 1] += err * 3 / 16;
+      if (y + 1 < 64) gray[idx + 128] += err * 5 / 16;
+      if (x + 1 < 128 && y + 1 < 64) gray[idx + 128 + 1] += err * 1 / 16;
+    }
+  }
+
+  const out = new ImageData(128, 64);
+  for (let i = 0; i < 128 * 64; i++) {
+    const v = gray[i] < 128 ? 0 : 255;
+    out.data[i * 4] = v;
+    out.data[i * 4 + 1] = v;
+    out.data[i * 4 + 2] = v;
+    out.data[i * 4 + 3] = 255;
+  }
+  return out;
+}
+
+function imageDataToBase64Bitmap(imageData) {
+  const img = imageData.data;
+  const bytesPerRow = 128 / 8;
+  const out = new Uint8Array(bytesPerRow * 64);
+  for (let y = 0; y < 64; y++) {
+    for (let bIdx = 0; bIdx < bytesPerRow; bIdx++) {
+      let byte = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        const x = bIdx * 8 + bit;
+        const px = (y * 128 + x) * 4;
+        const on = img[px] > 127;
+        byte = (byte << 1) | (on ? 1 : 0);
+      }
+      out[y * bytesPerRow + bIdx] = byte;
+    }
+  }
+  let binary = '';
+  for (let i = 0; i < out.length; i++) binary += String.fromCharCode(out[i]);
+  return btoa(binary);
+}
+
+function canvasToBase64Bitmap() {
+  return imageDataToBase64Bitmap(ctx.getImageData(0, 0, 128, 64));
+}
+
+// ---------- Static image upload -> dither -> draw onto the board ----------
+function handleStaticImage(file) {
+  const img = new Image();
+  img.onload = () => {
+    stopAnimationPreview();
+    const dithered = ditherSourceTo128x64(img, img.width, img.height);
+    ctx.putImageData(dithered, 0, 0);
+    URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(file);
+}
+
+// ---------- GIF decoding -> per-frame dithering -> animation preview ----------
+const MAX_FRAMES = 24;
+
+async function handleGifArrayBuffer(buffer) {
+  const gif = parseGIF(buffer);
+  const rawFrames = decompressFrames(gif, true);
+  const gifW = gif.lsd.width;
+  const gifH = gif.lsd.height;
+
+  // Composite each frame onto a persistent working canvas (GIF frames often
+  // only encode the changed region, not the full picture each time).
+  const work = document.createElement('canvas');
+  work.width = gifW;
+  work.height = gifH;
+  const wctx = work.getContext('2d');
+  wctx.fillStyle = '#000';
+  wctx.fillRect(0, 0, gifW, gifH);
+
+  const composited = []; // { imageData: full-res ImageData snapshot, delay }
+  let prevDisposal = 0;
+  let prevDims = null;
+
+  for (const frame of rawFrames) {
+    if (prevDisposal === 2 && prevDims) {
+      wctx.fillStyle = '#000';
+      wctx.fillRect(prevDims.left, prevDims.top, prevDims.width, prevDims.height);
+    }
+    const patchCanvas = document.createElement('canvas');
+    patchCanvas.width = frame.dims.width;
+    patchCanvas.height = frame.dims.height;
+    patchCanvas.getContext('2d').putImageData(
+      new ImageData(frame.patch, frame.dims.width, frame.dims.height), 0, 0
+    );
+    wctx.drawImage(patchCanvas, frame.dims.left, frame.dims.top);
+
+    composited.push({
+      imageData: wctx.getImageData(0, 0, gifW, gifH),
+      delay: frame.delay > 0 ? frame.delay : 100,
+    });
+    prevDisposal = frame.disposalType;
+    prevDims = frame.dims;
+  }
+
+  // Sample down to MAX_FRAMES if needed, redistributing total duration
+  // evenly across the sampled frames.
+  let sampled = composited;
+  if (composited.length > MAX_FRAMES) {
+    sampled = [];
+    for (let i = 0; i < MAX_FRAMES; i++) {
+      sampled.push(composited[Math.floor(i * composited.length / MAX_FRAMES)]);
+    }
+  }
+  const totalDelay = composited.reduce((sum, f) => sum + f.delay, 0);
+  const uniformDelay = Math.round(totalDelay / sampled.length) || 100;
+
+  animFrames = sampled.map((f) => ditherSourceTo128x64(f.imageData, gifW, gifH));
+  animDelayMs = Math.min(2000, Math.max(20, uniformDelay));
+  startAnimationPreview();
+}
+
+function handleImageOrGifFile(file) {
+  if (file.type === 'image/gif') {
+    file.arrayBuffer().then(handleGifArrayBuffer);
+  } else {
+    handleStaticImage(file);
+  }
+}
+
+document.getElementById('imageUpload').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) handleImageOrGifFile(file);
+});
+
+async function refreshDrawStatus() {
+  const el = document.getElementById('drawStatus');
+  try {
+    const res = await fetch('/api/drawing');
+    const data = await res.json();
+    if (data.active) {
+      const mins = Math.ceil(data.remainingMs / 60000);
+      el.textContent = `Drawing active on device (${mins} min left)`;
+    } else {
+      el.textContent = 'No drawing set.';
+    }
+  } catch (e) {
+    el.textContent = 'Could not reach server.';
+  }
+}
+
+document.getElementById('sendDrawingBtn').addEventListener('click', async () => {
+  const bitmap = canvasToBase64Bitmap();
+  const durationMinutes = document.getElementById('drawDuration').value;
+  await fetch('/api/drawing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ frames: [bitmap], delayMs: 200, durationMinutes }),
+  });
+  refreshDrawStatus();
+});
+
+document.getElementById('sendAnimationBtn').addEventListener('click', async () => {
+  const frames = animFrames.map(imageDataToBase64Bitmap);
+  const durationMinutes = document.getElementById('drawDuration').value;
+  await fetch('/api/drawing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ frames, delayMs: animDelayMs, durationMinutes }),
+  });
+  refreshDrawStatus();
+});
+
+document.getElementById('clearDrawingForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  stopAnimationPreview();
+  await fetch('/api/drawing?action=clear', { method: 'POST' });
+  refreshDrawStatus();
+});
+
+document.getElementById('saveToLibraryBtn').addEventListener('click', async () => {
+  const name = document.getElementById('saveSlideName').value.trim() || 'Untitled';
+  const frames = animFrames.length > 0
+    ? animFrames.map(imageDataToBase64Bitmap)
+    : [canvasToBase64Bitmap()];
+  const delayMs = animFrames.length > 0 ? animDelayMs : 200;
+
+  const res = await fetch('/api/slides', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, frames, delayMs }),
+  });
+  if (res.ok) {
+    document.getElementById('saveSlideName').value = '';
+    renderLibrary();
+  }
+});
+
+// ---------- Slide Library ----------
+const BUILTIN_SLIDES = [
+  { id: "alive", name: "Alive" },
+  { id: "love", name: "Love" },
+  { id: "angry", name: "Angry" },
+  { id: "sad", name: "Sad" },
+  { id: "dizzy", name: "Dizzy" },
+  { id: "clock", name: "Clock" },
+  { id: "weather", name: "Weather" },
+  { id: "spotify", name: "Spotify" },
+];
+
+let customSlidesCache = [];
+
+async function fetchCustomSlides() {
+  const res = await fetch('/api/slides');
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.slides;
+}
+
+function bitmapBase64ToDataUrl(base64) {
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 64;
+  const cctx = c.getContext('2d');
+  const img = cctx.createImageData(128, 64);
+  const bytesPerRow = 16;
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 128; x++) {
+      const byte = bytes[y * bytesPerRow + (x >> 3)];
+      const bit = (byte >> (7 - (x & 7))) & 1;
+      const v = bit ? 255 : 0;
+      const p = (y * 128 + x) * 4;
+      img.data[p] = v; img.data[p + 1] = v; img.data[p + 2] = v; img.data[p + 3] = 255;
+    }
+  }
+  cctx.putImageData(img, 0, 0);
+  return c.toDataURL();
+}
+
+async function renderLibrary() {
+  const grid = document.getElementById('libraryGrid');
+  grid.innerHTML = '';
+  customSlidesCache = await fetchCustomSlides();
+  const allSlideOptions = [...BUILTIN_SLIDES, ...customSlidesCache.map(s => ({ id: s.id, name: s.name }))];
+
+  for (const b of BUILTIN_SLIDES) {
+    const tile = document.createElement('div');
+    tile.style.cssText = 'border:1px solid #ccc;border-radius:6px;padding:8px;text-align:center;font-size:13px';
+    tile.innerHTML = `<div style="font-weight:bold">${b.name}</div><div style="color:#888">(built-in)</div>`;
+    grid.appendChild(tile);
+  }
+
+  for (const s of customSlidesCache) {
+    const tile = document.createElement('div');
+    tile.style.cssText = 'border:1px solid #ccc;border-radius:6px;padding:8px;text-align:center;font-size:13px';
+    const img = document.createElement('img');
+    img.src = bitmapBase64ToDataUrl(s.previewFrame);
+    img.style.cssText = 'width:100%;image-rendering:pixelated;border-radius:4px';
+    const nameEl = document.createElement('div');
+    nameEl.textContent = s.name;
+    nameEl.style.fontWeight = 'bold';
+
+    const altSelect = document.createElement('select');
+    altSelect.style.fontSize = '12px';
+    const noneOpt = document.createElement('option');
+    noneOpt.value = ''; noneOpt.textContent = 'Long-press: None';
+    altSelect.appendChild(noneOpt);
+    for (const opt of allSlideOptions) {
+      if (opt.id === s.id) continue;
+      const o = document.createElement('option');
+      o.value = opt.id; o.textContent = 'Long-press: ' + opt.name;
+      if (opt.id === s.longPressAlternateSlideId) o.selected = true;
+      altSelect.appendChild(o);
+    }
+    altSelect.addEventListener('change', async () => {
+      await fetch(`/api/slides/${s.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ longPressAlternateSlideId: altSelect.value || null }),
+      });
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.style.cssText = 'background:#c0392b;font-size:12px;padding:4px';
+    deleteBtn.addEventListener('click', async () => {
+      await fetch(`/api/slides/${s.id}`, { method: 'DELETE' });
+      renderLibrary();
+    });
+
+    tile.appendChild(img);
+    tile.appendChild(nameEl);
+    tile.appendChild(altSelect);
+    tile.appendChild(deleteBtn);
+    grid.appendChild(tile);
+  }
+}
+
+// ---------- Rotation Picker ----------
+let currentRotation = { entries: [] };
+
+async function loadRotation() {
+  const res = await fetch('/api/rotation');
+  currentRotation = res.ok ? await res.json() : { entries: [] };
+  renderPicker();
+}
+
+function slideNameFor(id) {
+  const builtin = BUILTIN_SLIDES.find(b => b.id === id);
+  if (builtin) return builtin.name;
+  const custom = customSlidesCache.find(s => s.id === id);
+  return custom ? custom.name : id;
+}
+
+const MAX_ROTATION_ENTRIES = 32;
+const DEVICE_STORAGE_BYTES = 917504; // ~896KB LittleFS partition (huge_app scheme)
+const SLIDE_HEADER_BYTES = 70; // frameCount(1) + delayMs(4) + altLen(1) + alt(up to 64)
+
+function renderStorageStats() {
+  const statsEl = document.getElementById('storageStats');
+  const barEl = document.getElementById('storageBar');
+
+  const slotsUsed = currentRotation.entries.length;
+  let bytesUsed = 0;
+  for (const entry of currentRotation.entries) {
+    if (entry.isBuiltin) continue;
+    const slide = customSlidesCache.find(s => s.id === entry.slideId);
+    if (slide) bytesUsed += slide.frameCount * 1024 + SLIDE_HEADER_BYTES;
+  }
+
+  const kbUsed = (bytesUsed / 1024).toFixed(1);
+  const kbTotal = (DEVICE_STORAGE_BYTES / 1024).toFixed(0);
+  const pct = Math.min(100, (bytesUsed / DEVICE_STORAGE_BYTES) * 100);
+
+  statsEl.textContent = `${slotsUsed} / ${MAX_ROTATION_ENTRIES} rotation slots used -- ~${kbUsed} KB / ${kbTotal} KB estimated device storage`;
+  barEl.style.width = pct + '%';
+  barEl.style.background = pct > 90 ? '#c0392b' : (pct > 70 ? '#e67e22' : '#1db954');
+}
+
+function renderPicker() {
+  renderStorageStats();
+  const list = document.getElementById('pickerList');
+  list.innerHTML = '';
+  currentRotation.entries.forEach((entry, idx) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #eee';
+
+    const label = document.createElement('span');
+    label.style.flex = '1';
+    label.textContent = `${idx + 1}. ${slideNameFor(entry.slideId)}`;
+    row.appendChild(label);
+
+    if (entry.isBuiltin) {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = entry.longPressEnabled !== false;
+      cb.title = 'Long-press enabled';
+      cb.addEventListener('change', () => { entry.longPressEnabled = cb.checked; });
+      row.appendChild(cb);
+    }
+
+    const upBtn = document.createElement('button');
+    upBtn.textContent = '↑'; upBtn.type = 'button';
+    upBtn.style.cssText = 'width:32px;padding:2px';
+    upBtn.disabled = idx === 0;
+    upBtn.addEventListener('click', () => {
+      [currentRotation.entries[idx - 1], currentRotation.entries[idx]] =
+        [currentRotation.entries[idx], currentRotation.entries[idx - 1]];
+      renderPicker();
+    });
+    row.appendChild(upBtn);
+
+    const downBtn = document.createElement('button');
+    downBtn.textContent = '↓'; downBtn.type = 'button';
+    downBtn.style.cssText = 'width:32px;padding:2px';
+    downBtn.disabled = idx === currentRotation.entries.length - 1;
+    downBtn.addEventListener('click', () => {
+      [currentRotation.entries[idx + 1], currentRotation.entries[idx]] =
+        [currentRotation.entries[idx], currentRotation.entries[idx + 1]];
+      renderPicker();
+    });
+    row.appendChild(downBtn);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.textContent = '✕'; removeBtn.type = 'button';
+    removeBtn.style.cssText = 'width:32px;padding:2px;background:#c0392b';
+    removeBtn.disabled = currentRotation.entries.length <= 1;
+    removeBtn.title = removeBtn.disabled ? 'At least one slide must stay in the rotation' : '';
+    removeBtn.addEventListener('click', () => {
+      currentRotation.entries.splice(idx, 1);
+      renderPicker();
+    });
+    row.appendChild(removeBtn);
+
+    list.appendChild(row);
+  });
+
+  const addSelect = document.getElementById('addSlideSelect');
+  addSelect.innerHTML = '';
+  const allOptions = [...BUILTIN_SLIDES, ...customSlidesCache.map(s => ({ id: s.id, name: s.name }))];
+  for (const opt of allOptions) {
+    const o = document.createElement('option');
+    o.value = opt.id; o.textContent = opt.name;
+    addSelect.appendChild(o);
+  }
+}
+
+document.getElementById('addSlideBtn').addEventListener('click', () => {
+  const slideId = document.getElementById('addSlideSelect').value;
+  if (!slideId) return;
+  const isBuiltin = BUILTIN_SLIDES.some(b => b.id === slideId);
+  currentRotation.entries.push({ slideId, isBuiltin, longPressEnabled: true });
+  renderPicker();
+});
+
+document.getElementById('saveRotationBtn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('pickerStatus');
+  if (currentRotation.entries.length === 0) {
+    statusEl.textContent = 'Add at least one slide before saving.';
+    return;
+  }
+  const res = await fetch('/api/rotation', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entries: currentRotation.entries }),
+  });
+  if (res.ok) {
+    statusEl.textContent = 'Saved!';
+  } else {
+    const errText = await res.text();
+    statusEl.textContent = 'Failed to save: ' + errText;
+  }
+});
+
+// ---------- Giphy search ----------
+document.getElementById('giphySearchBtn').addEventListener('click', async () => {
+  const q = document.getElementById('giphyQuery').value.trim();
+  const errEl = document.getElementById('giphyError');
+  const resultsEl = document.getElementById('giphyResults');
+  errEl.textContent = '';
+  resultsEl.innerHTML = '';
+  if (!q) return;
+  try {
+    const res = await fetch(`/api/giphy?q=${encodeURIComponent(q)}`);
+    if (!res.ok) {
+      errEl.textContent = 'Giphy search failed.';
+      return;
+    }
+    const data = await res.json();
+    for (const gifItem of data.results) {
+      const img = document.createElement('img');
+      img.src = gifItem.thumbUrl;
+      img.title = gifItem.title;
+      img.addEventListener('click', async () => {
+        errEl.textContent = 'Loading...';
+        try {
+          const gifRes = await fetch(gifItem.originalUrl);
+          const buffer = await gifRes.arrayBuffer();
+          await handleGifArrayBuffer(buffer);
+          errEl.textContent = '';
+        } catch (e) {
+          console.error(e);
+          errEl.textContent = 'Could not load that GIF: ' + (e && e.message ? e.message : e);
+        }
+      });
+      resultsEl.appendChild(img);
+    }
+  } catch (e) {
+    errEl.textContent = 'Giphy search failed.';
+  }
+});
+
+async function init() {
+  const authed = await checkAuth();
+  if (authed) {
+    refreshStatus();
+    refreshDrawStatus();
+    await renderLibrary();
+    loadRotation();
+  }
+}
+
+init();
+</script>
+</body>
+</html>

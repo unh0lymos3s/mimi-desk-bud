@@ -1,0 +1,10 @@
+# Arduino secrets (WiFi, Spotify, remote message/drawing relay)
+secrets.h
+
+# Netlify remote-message app
+remote-message/node_modules/
+remote-message/.netlify/
+remote-message/.env
+docs/
+# Misc
+.DS_Store
