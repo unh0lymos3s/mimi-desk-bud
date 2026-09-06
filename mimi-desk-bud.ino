@@ -241,7 +241,7 @@ void loop() {
 
   // 2. TIMELINE LOGIC (Sleep Sequence)
   if (!isSleeping && currentMode == 0 && !isBeingPetted) {
-      unsigned long elapsed = currentMillis - lastInteractionTime;
+      unsigned long elapsed = millis() - lastInteractionTime;
 
       if (!hasMidYawned && elapsed > randomMidYawnTime) {
           triggerYawn(2500); hasMidYawned = true;
@@ -327,7 +327,7 @@ void handleInput() {
   if (touch && !isTouching) {
       isTouching = true;
       touchStartTime = now;
-      lastInteractionTime = now; 
+      lastInteractionTime = now;
       if(isSleeping) {
         isSleeping = false; isDriftingOff = false; targetEyeOpenFactor = 1.0;
         rotationIndex = 0;
@@ -361,7 +361,7 @@ void handleInput() {
       if (now - lastTapTime > DOUBLE_TAP_DELAY) {
           if (tapCount == 1) triggerSingleTapAction();
           else if (tapCount >= 2) triggerModeChange();
-          tapCount = 0; 
+          tapCount = 0;
       }
   }
 }

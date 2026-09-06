@@ -7,6 +7,7 @@
 #include <Adafruit_SH110X.h>
 #include "mbedtls/base64.h"
 #include "secrets.h"
+#include "chunkedbodyreader.h"
 
 extern Adafruit_SH1106G display;
 
@@ -44,8 +45,9 @@ void remoteDrawingPoll() {
   http.begin(String(REMOTE_DRAWING_URL) + "?key=" + REMOTE_DRAWING_KEY);
   int code = http.GET();
   if (code == 200) {
-    DynamicJsonDocument doc(49152);
-    DeserializationError err = deserializeJson(doc, http.getString());
+    ChunkedBodyReader reader(http.getStream());
+    JsonDocument doc; // self-growing (ArduinoJson v7) -- scales with frame count
+    DeserializationError err = deserializeJson(doc, reader);
     if (!err) {
       bool active = doc["active"] | false;
       if (active) {

@@ -3,112 +3,157 @@
 #include "slidestorage.h"
 #include "secrets.h"
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "mbedtls/base64.h"
+#include "chunkedbodyreader.h"
 
 static const char *BUNDLE_URL = SECRET_REMOTE_BUNDLE_URL;
+static const char *ROTATION_URL = SECRET_REMOTE_ROTATION_URL;
+static const char *SLIDES_URL = SECRET_REMOTE_SLIDES_URL;
 static const char *BUNDLE_KEY = SECRET_REMOTE_KEY;
 
-// Netlify's edge functions always respond with Transfer-Encoding: chunked
-// (no Content-Length, even if the function sets one), and the bundle body
-// is large enough (tens of KB, scaling with how many custom slides are in
-// the rotation) that buffering it into one contiguous String/JsonDocument
-// source is unreliable on this device -- large single allocations during
-// an active TLS connection were observed failing partway through (HTTPClient
-// error -10, STREAM_WRITE) well before device RAM was actually exhausted,
-// i.e. a heap-fragmentation problem, not a true out-of-memory one.
-//
-// This class dechunks HTTPClient's raw body stream itself (HTTPClient's own
-// getString()/writeToStream() do this internally too, but always into one
-// buffer) and exposes it as a plain Stream, so ArduinoJson can parse the
-// JSON incrementally without ever needing the whole response in RAM at once.
-class ChunkedBodyReader : public Stream {
-public:
-  explicit ChunkedBodyReader(Stream &client) : _client(client) {}
+static const int MAX_NEEDED_SLIDES = 64;
 
-  int available() override {
-    if (_done) return 0;
-    if (_remainingInChunk == 0 && !readNextChunkHeader()) {
-      _done = true;
-      return 0;
-    }
-    return _remainingInChunk > 0 ? 1 : 0;
+// A fresh WiFiClientSecure per HTTPClient (the naive approach) leaves this
+// device unable to complete more than ~3 sequential HTTPS requests in one
+// boot -- confirmed by testing the exact same slide URL as the very first
+// HTTPS call of the boot (succeeds) versus the 4th/5th call (fails with
+// HTTPC_ERROR_CONNECTION_REFUSED, unrelated to heap/fragmentation, which
+// measured healthy at the failure point). This is a known category of
+// resource-exhaustion issue with this core's TLS client when a new context
+// is created and torn down repeatedly in quick succession. Reusing one
+// client instance across all of a sync's requests, with an explicit stop()
+// between them, avoids it.
+static WiFiClientSecure secureClient;
+static bool secureClientReady = false;
+
+static WiFiClientSecure &sharedClient() {
+  if (!secureClientReady) {
+    secureClient.setInsecure();
+    secureClientReady = true;
   }
-
-  int read() override {
-    if (!available()) return -1;
-    int c = _client.read();
-    if (c >= 0) {
-      _remainingInChunk--;
-      if (_remainingInChunk == 0) {
-        char crlf[2];
-        _client.readBytes(crlf, 2); // consume the chunk's trailing CRLF
-      }
-    }
-    return c;
-  }
-
-  int peek() override {
-    if (!available()) return -1;
-    return _client.peek();
-  }
-
-  size_t write(uint8_t) override { return 0; } // write side unused
-
-private:
-  Stream &_client;
-  size_t _remainingInChunk = 0;
-  bool _done = false;
-
-  bool readNextChunkHeader() {
-    String line = _client.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) return false;
-    long len = strtol(line.c_str(), nullptr, 16);
-    if (len <= 0) return false; // terminal (zero-length) chunk
-    _remainingInChunk = (size_t)len;
-    return true;
-  }
-};
+  return secureClient;
+}
 
 void bundleSyncInit() {
-  // Nothing to do; first sync happens on the first bundleSyncPoll() call.
+  // Nothing to do; the shared client initializes lazily on first use.
 }
 
 static bool fetchVersionOnly(unsigned long long &outVersion) {
   HTTPClient http;
-  http.begin(String(BUNDLE_URL) + "?versionOnly=1&key=" + BUNDLE_KEY);
+  http.begin(sharedClient(), String(BUNDLE_URL) + "?versionOnly=1&key=" + BUNDLE_KEY);
   int code = http.GET();
   bool ok = false;
   if (code == 200) {
-    DynamicJsonDocument doc(256);
+    JsonDocument doc;
     if (!deserializeJson(doc, http.getString())) {
       outVersion = doc["version"] | 0ULL;
       ok = true;
     }
   }
   http.end();
+  sharedClient().stop();
   return ok;
 }
 
-static bool fetchAndStoreFullBundle(unsigned long long version) {
+// Fetches one custom slide's full data (its own small HTTP request -- this
+// is the key change from the old design, which fetched every slide in one
+// combined response and needed enough RAM to hold all of them parsed at
+// once). Writes it straight to local flash storage, then frees its memory
+// before the caller moves on to the next slide, so peak RAM usage during a
+// sync only ever needs to cover ONE slide, no matter how many total slides
+// are in the rotation.
+static bool fetchAndStoreOneSlide(const String &slideId, String neededIds[],
+                                   int &neededCount) {
   HTTPClient http;
-  http.begin(String(BUNDLE_URL) + "?key=" + BUNDLE_KEY);
+  http.begin(sharedClient(), String(SLIDES_URL) + "/" + slideId + "?key=" + BUNDLE_KEY);
   int code = http.GET();
-  if (code != 200) { http.end(); return false; }
+  if (code != 200) {
+    Serial.print("Bundle sync: slide "); Serial.print(slideId);
+    Serial.print(" -> HTTP "); Serial.println(code);
+    http.end();
+    sharedClient().stop();
+    return false;
+  }
 
   ChunkedBodyReader reader(http.getStream());
-  DynamicJsonDocument doc(65536);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, reader);
   http.end();
+  sharedClient().stop();
   if (err) {
-    Serial.print("Bundle sync: JSON parse error: ");
+    Serial.print("Bundle sync: slide "); Serial.print(slideId);
+    Serial.print(" JSON parse error: "); Serial.println(err.c_str());
+    return false;
+  }
+
+  JsonArray frames = doc["frames"];
+  static uint8_t frameBuf[SLIDE_MAX_FRAMES][SLIDE_BITMAP_BYTES];
+  int frameCount = 0;
+  for (JsonVariant fv : frames) {
+    if (frameCount >= SLIDE_MAX_FRAMES) break;
+    const char *b64 = fv.as<const char *>();
+    if (!b64) continue;
+    size_t outLen = 0;
+    int rc = mbedtls_base64_decode(frameBuf[frameCount], SLIDE_BITMAP_BYTES, &outLen,
+                                    (const unsigned char *)b64, strlen(b64));
+    if (rc == 0 && outLen == SLIDE_BITMAP_BYTES) frameCount++;
+  }
+  if (frameCount == 0) return false;
+
+  SlideHeader header;
+  header.frameCount = frameCount;
+  header.delayMs = doc["delayMs"] | 200;
+  const char *alt = doc["longPressAlternateSlideId"];
+  header.longPressAlternateSlideId = alt ? String(alt) : String("");
+
+  bool ok = slideStorageWriteSlide(slideId, header, frameBuf);
+
+  // If this slide has an alternate we don't already know about, queue it
+  // up too (neededIds is iterated by index in the caller, so appending
+  // here is picked up naturally on a later loop iteration).
+  if (header.longPressAlternateSlideId.length() > 0 && neededCount < MAX_NEEDED_SLIDES) {
+    bool alreadyKnown = false;
+    for (int i = 0; i < neededCount; i++) {
+      if (neededIds[i] == header.longPressAlternateSlideId) {
+        alreadyKnown = true;
+        break;
+      }
+    }
+    if (!alreadyKnown) {
+      neededIds[neededCount++] = header.longPressAlternateSlideId;
+    }
+  }
+
+  return ok;
+}
+
+static bool syncRotationAndSlides(unsigned long long version) {
+  // Step 1: fetch just the rotation config -- small (at most 32 short
+  // entries), always comfortably fits regardless of slide library size.
+  HTTPClient http;
+  http.begin(sharedClient(), String(ROTATION_URL) + "?key=" + BUNDLE_KEY);
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    sharedClient().stop();
+    return false;
+  }
+
+  ChunkedBodyReader reader(http.getStream());
+  JsonDocument rotDoc;
+  DeserializationError err = deserializeJson(rotDoc, reader);
+  http.end();
+  sharedClient().stop();
+  if (err) {
+    Serial.print("Bundle sync: rotation JSON parse error: ");
     Serial.println(err.c_str());
     return false;
   }
 
-  JsonArray entries = doc["rotation"]["entries"];
+  JsonArray entries = rotDoc["entries"];
   RotationEntry rotationEntries[MAX_ROTATION_ENTRIES];
   int rotationCount = 0;
   for (JsonObject e : entries) {
@@ -120,42 +165,35 @@ static bool fetchAndStoreFullBundle(unsigned long long version) {
   }
   if (rotationCount == 0) return false;
 
-  JsonObject slidesObj = doc["slides"];
-  static uint8_t frameBuf[SLIDE_MAX_FRAMES][SLIDE_BITMAP_BYTES];
-  for (JsonPair kv : slidesObj) {
-    String slideId = kv.key().c_str();
-    JsonObject slide = kv.value();
-    JsonArray frames = slide["frames"];
-    int frameCount = 0;
-    for (JsonVariant fv : frames) {
-      if (frameCount >= SLIDE_MAX_FRAMES) break;
-      const char *b64 = fv.as<const char *>();
-      if (!b64) continue;
-      size_t outLen = 0;
-      int rc = mbedtls_base64_decode(frameBuf[frameCount], SLIDE_BITMAP_BYTES, &outLen,
-                                      (const unsigned char *)b64, strlen(b64));
-      if (rc == 0 && outLen == SLIDE_BITMAP_BYTES) frameCount++;
-    }
-    if (frameCount == 0) continue;
-
-    SlideHeader header;
-    header.frameCount = frameCount;
-    header.delayMs = slide["delayMs"] | 200;
-    const char *alt = slide["longPressAlternateSlideId"];
-    header.longPressAlternateSlideId = alt ? String(alt) : String("");
-
-    if (!slideStorageWriteSlide(slideId, header, frameBuf)) {
-      Serial.print("Bundle sync: failed writing slide "); Serial.println(slideId);
+  // Step 2: fetch each referenced custom slide one at a time.
+  String neededIds[MAX_NEEDED_SLIDES];
+  int neededCount = 0;
+  for (int i = 0; i < rotationCount; i++) {
+    if (!rotationEntries[i].isBuiltin && neededCount < MAX_NEEDED_SLIDES) {
+      neededIds[neededCount++] = rotationEntries[i].slideId;
     }
   }
 
-  // Prune local slide files no longer referenced by this bundle.
+  // neededCount can grow inside the loop (alternates discovered along the
+  // way), so re-check the (possibly updated) bound each iteration.
+  for (int i = 0; i < neededCount; i++) {
+    if (!fetchAndStoreOneSlide(neededIds[i], neededIds, neededCount)) {
+      Serial.print("Bundle sync: failed fetching slide "); Serial.println(neededIds[i]);
+    }
+  }
+
+  // Step 3: prune local slide files no longer referenced by this rotation.
   String localIds[64];
   int localCount = slideStorageListSlideIds(localIds, 64);
   for (int i = 0; i < localCount; i++) {
-    if (!slidesObj.containsKey(localIds[i])) {
-      slideStorageDeleteSlide(localIds[i]);
+    bool stillNeeded = false;
+    for (int j = 0; j < neededCount; j++) {
+      if (localIds[i] == neededIds[j]) {
+        stillNeeded = true;
+        break;
+      }
     }
+    if (!stillNeeded) slideStorageDeleteSlide(localIds[i]);
   }
 
   if (!slideStorageWriteRotation(rotationEntries, rotationCount)) return false;
@@ -180,7 +218,7 @@ bool bundleSyncPoll() {
   if (remoteVersion == slideStorageGetSyncedVersion()) return false;
 
   Serial.printf("Bundle sync: new version %llu\n", remoteVersion);
-  bool ok = fetchAndStoreFullBundle(remoteVersion);
+  bool ok = syncRotationAndSlides(remoteVersion);
   Serial.println(ok ? "Bundle sync: OK" : "Bundle sync: FAILED");
   return ok;
 }
