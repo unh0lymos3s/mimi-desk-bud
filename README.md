@@ -16,6 +16,9 @@ Building MIMI is very simple, let's start with the indgredients, the ones labell
 4. **OPTIONAL** A Netlify account, free tier works fine (This will be where we host the web interface)
 5. **OPTIONAL** A Spotify account (To control and display the current playing song)
 4. ARDUINO IDE (To flash the firmware on to the ESP32-C3)
+5. In your mimi directory, create a file called secrets.h, copy the contents of secrets.h.example into it, add in your wifi name and password.
+6. At the bottom of your secrets.h in the SECRET_REMOTE_KEY, add a random 32 character value.
+leave the rest as is, we will deal with it later.
 
 ## STEP 1: Making connections
 
@@ -44,7 +47,43 @@ The hard part is over, now:
 
 # STEP 3: Getting the web server up and running
 
-#  SPOTIFY AUTH FLOW (DO NOT BE SCARED)
+To get the web server up and running, we will need a couple of rather simple steps:
+
+1. install Netlify-cli on your device, you can do it via npm (you can get npm by installing node.js) if you have it available, or homebrew. For this installation I will assume you downloaded Node and now have npm up and running in your terminal/command prompt:
+
+you can verify the npm installation by 
+
+`npm --version`
+
+then:
+`npm install -g netlify-cli` 
+
+`cd mimi-desk-bud/remote-message` 
+
+Create a file named, .env in the remote-message folder, copy the contents of .env.example and add in your MESSAGE_SECRET, MESSAGE_PIN, GIPHY API KEY.
+
+The MESSAGE_PIN will be the pin to access your web portal after it's deployed.
+Make sure to keep the same MESSAGE_SECRET as your SECRET_REMOTE_KEY in your **secrets.h**
+
+To get the GIPHY API KEY, Create a [Giphy Developer Account](https://developers.giphy.com/) and create your API key.
+
+After that, run: 
+
+`netlify login`
+`netlify init` 
+`netlify deploy --prod`
+
+You can then log in to netlify on your web browser, change your domain to anythingyouwant.netlify.app
+
+Once you have the URL how you want it to be, add in the link to the respective values in **secrets.h** but do not change anything after netlify.app/ as that would cause the functions to stop working.
+
+
+You can then log in and continue with sending messages to your mimi and managing the animations via the website.
+
+
+
+
+#  STEPS TO GET THE SPOTIFY CONTROLS WORKING:
 
 1. Create **SPOTIFY DEVELOPER ACCOUNT**
 2. Create an application, name it whatever you want, choose the **Spotify WEB API and 127.0.0.1:8888 for callback**  
