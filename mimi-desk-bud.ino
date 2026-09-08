@@ -1,17 +1,7 @@
 
 /*
-  ESP32 OLED Desk Bot 🤖✨
-  ------------------------------------------------
-  An expressive ESP32-powered desktop companion
-  with animated emotions, touch interaction,
-  clock & weather display.
-
-  Default demo location: New York City (NYC)
-
-  ------------------------------------------------
-  Created by: Abay Melethil
-  GitHub: https://github.com/Abaymelethil
-  License: MIT
+I STOLE SOME OF THIS CODE BUT IM NOT MAKING MONEY OFF OF IT SO ITS OK
+ALL CREDITS GO TO ME
 */
 #include <WiFi.h>
 #include <HTTPClient.h>
