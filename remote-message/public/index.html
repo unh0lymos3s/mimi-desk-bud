@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Desk Bot Message</title>
+<title>MIMI Message</title>
 <style>
 body{font-family:sans-serif;max-width:420px;margin:40px auto;padding:0 16px}
 input,select,button{font-size:16px;padding:8px;margin:6px 0;width:100%;box-sizing:border-box}
@@ -23,7 +23,7 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;border:1px solid #3
 <body>
 
 <div id="loginView">
-  <h2>Desk Bot Login</h2>
+  <h2>MIMI Login</h2>
   <div class="error" id="loginError"></div>
   <form id="loginForm">
     <input name="pin" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit PIN" required>
@@ -32,7 +32,7 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;border:1px solid #3
 </div>
 
 <div id="appView" style="display:none">
-  <h2>Desk Bot Message</h2>
+  <h2>MIMI Message</h2>
   <div class="status" id="status">Loading...</div>
   <form id="setForm">
   <input name="msg" id="msg" maxlength="60" placeholder="e.g. Away from desk until 3pm" required>
@@ -48,7 +48,7 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;border:1px solid #3
 
   <hr>
 
-  <h2>Draw / Set Image or GIF on Desk Bot</h2>
+  <h2>Draw / Set Image or GIF on MIMI</h2>
   <input type="file" id="imageUpload" accept="image/*">
   <div class="status" id="drawStatus">Loading...</div>
   <div id="canvasWrap">
@@ -68,8 +68,8 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;border:1px solid #3
   <option value="60">1 hour</option>
   <option value="240">4 hours</option>
   </select>
-  <button id="sendDrawingBtn" type="button">Send drawing to Desk Bot</button>
-  <button id="sendAnimationBtn" type="button" style="display:none">Send animation to Desk Bot</button>
+  <button id="sendDrawingBtn" type="button">Send drawing to MIMI</button>
+  <button id="sendAnimationBtn" type="button" style="display:none">Send animation to MIMI</button>
   <form id="clearDrawingForm"><button type="submit" style="background:#888">Clear drawing on device</button></form>
 
   <input type="text" id="saveSlideName" placeholder="Slide name" maxlength="60">
